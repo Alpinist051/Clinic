@@ -12,13 +12,18 @@ const analyticsRoutes = require('./routes/analyticsRoutes');
 const app = express();
 
 
-// ✅ Allow all origins
-app.use(cors({
-    origin: true,        // reflect request origin
-    credentials: true    // allow cookies if needed
-}));
+const allowedOrigins = [
+    'https://clinic-mwhu.vercel.app',
+    process.env.FRONTEND_URL
+].filter(Boolean);
 
-app.options('*', cors()); // handle preflight
+app.use(cors({
+    origin: allowedOrigins,
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.options('*', cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
