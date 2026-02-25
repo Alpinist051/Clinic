@@ -16,6 +16,7 @@ const generateToken = (id) => {
 // @route   POST /api/auth/signup
 const signup = async (req, res) => {
     try {
+        console.log("signup request body:", req.body);
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
             return res.status(400).json({ errors: errors.array() });
