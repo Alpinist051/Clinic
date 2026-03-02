@@ -1,5 +1,5 @@
 // src/pages/NotificationsCenter.tsx
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
     Bell, BellRing, CheckCheck, X, Clock,
     AlertCircle, CheckCircle, Info, AlertTriangle,
@@ -38,29 +38,14 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/hooks/use-toast";
-import { useAuth } from "@/contexts/AuthContext";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { useNotifications } from "@/hooks/useNotifications";
+import { settingsService } from "@/services/settingsService";
+import type { NotificationItem } from "@/types/notifications";
 import { formatDistanceToNow } from "date-fns";
 import { he, enUS } from "date-fns/locale";
-
-interface Notification {
-    id: string;
-    type: 'lead' | 'system' | 'alert' | 'success' | 'reminder';
-    title: string;
-    message: string;
-    time: string;
-    read: boolean;
-    actionable: boolean;
-    actionLabel?: string;
-    actionLink?: string;
-    priority: 'high' | 'medium' | 'low';
-    metadata?: {
-        leadId?: string;
-        leadName?: string;
-        value?: number;
-    };
-}
+import { useNavigate } from "react-router-dom";
+import { translateAutomationName } from "@/lib/automationNames";
 
 const notificationIcons = {
     lead: MessageSquare,
@@ -79,11 +64,20 @@ const notificationColors = {
 };
 
 export default function NotificationsCenter() {
-    const { user } = useAuth();
     const { t, language } = useLanguage();
+    const isRTL = language === "he";
+    const navigate = useNavigate();
     const [filter, setFilter] = useState('all');
-    const [isLoading, setIsLoading] = useState(false);
-    const [notifications, setNotifications] = useState<Notification[]>([]);
+    const {
+        notifications,
+        isLoading,
+        unreadCount,
+        fetchNotifications,
+        markAsRead,
+        markAllAsRead,
+        deleteNotification,
+        clearAll
+    } = useNotifications();
     const [settings, setSettings] = useState({
         leadAlerts: true,
         systemAlerts: true,
@@ -94,190 +88,147 @@ export default function NotificationsCenter() {
         marketingAlerts: false
     });
 
-    // Load notifications
+    const formatTemplate = (key: string, values: Record<string, string | number>) => {
+        let template = t(key);
+        Object.entries(values).forEach(([param, value]) => {
+            template = template.replace(`{${param}}`, String(value));
+        });
+        return template;
+    };
+
+    const formatNotificationMessage = useCallback((notification: NotificationItem) => {
+        const message = notification.message || "";
+        const automationMetadataName = notification.metadata?.automationName;
+
+        const enabledMatch = message.match(/Automation "([^"]+)" was enabled\\./i);
+        if (enabledMatch) {
+            return formatTemplate("notifications_automation_enabled", {
+                name: translateAutomationName(automationMetadataName || enabledMatch[1], t)
+            });
+        }
+
+        const disabledMatch = message.match(/Automation "([^"]+)" was disabled\\./i);
+        if (disabledMatch) {
+            return formatTemplate("notifications_automation_disabled", {
+                name: translateAutomationName(automationMetadataName || disabledMatch[1], t)
+            });
+        }
+
+        const createdMatch = message.match(/Automation "([^"]+)" was created\\./i);
+        if (createdMatch) {
+            return formatTemplate("notifications_automation_created", {
+                name: translateAutomationName(automationMetadataName || createdMatch[1], t)
+            });
+        }
+
+        const runMatch = message.match(/Automation "([^"]+)" ran for lead (.+)\\./i)
+            || message.match(/Automation "([^"]+)" executed for lead (.+)\\./i);
+        if (runMatch) {
+            return formatTemplate("notifications_automation_run", {
+                automationName: translateAutomationName(automationMetadataName || runMatch[1], t),
+                leadName: notification.metadata?.leadName || runMatch[2]
+            });
+        }
+
+        const defaultAddedMatch = message.match(/(\\d+) default automation rules were added to your clinic\\./i);
+        if (defaultAddedMatch) {
+            return formatTemplate("notifications_default_automations_added", {
+                count: defaultAddedMatch[1]
+            });
+        }
+
+        const followupMatch = message.match(/Lead (.+) needs follow-up/i);
+        if (followupMatch) {
+            return formatTemplate("notifications_followup_needed", {
+                leadName: notification.metadata?.leadName || followupMatch[1]
+            });
+        }
+
+        const messageReceivedMatch = message.match(/Message from (.+?): (.+)/i);
+        if (messageReceivedMatch) {
+            return formatTemplate("notifications_message_received", {
+                leadName: notification.metadata?.leadName || messageReceivedMatch[1],
+                message: messageReceivedMatch[2]
+            });
+        }
+
+        return message;
+    }, [t]);
+
     useEffect(() => {
-        loadNotifications();
-    }, []);
-
-    const loadNotifications = async () => {
-        setIsLoading(true);
-        try {
-            // Simulate API call
-            await new Promise(resolve => setTimeout(resolve, 1000));
-
-            // Mock data - replace with actual API call
-            setNotifications([
-                {
-                    id: '1',
-                    type: 'lead',
-                    title: t('new_hot_lead'),
-                    message: t('lead_responded').replace('%s', 'דנה כהן'),
-                    time: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
-                    read: false,
-                    actionable: true,
-                    actionLabel: t('view_lead'),
-                    priority: 'high',
-                    metadata: { leadId: '101', leadName: 'דנה כהן', value: 450 }
-                },
-                {
-                    id: '2',
-                    type: 'success',
-                    title: t('client_returned'),
-                    message: t('lead_scheduled_followup').replace('%s', 'יוסי לוי'),
-                    time: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
-                    read: false,
-                    actionable: true,
-                    actionLabel: t('view_details') || 'ראה פרטים',
-                    priority: 'high',
-                    metadata: { leadId: '102', leadName: 'יוסי לוי', value: 800 }
-                },
-                {
-                    id: '3',
-                    type: 'system',
-                    title: t('import_completed'),
-                    message: t('messages_processed').replace('%s', '1,284'),
-                    time: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
-                    read: true,
-                    actionable: false,
-                    priority: 'medium'
-                },
-                {
-                    id: '4',
-                    type: 'alert',
-                    title: t('automation_rule_inactive'),
-                    message: t('rule_disabled').replace('%s', t('follow_up_1_week')),
-                    time: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
-                    read: false,
-                    actionable: true,
-                    actionLabel: t('fix_now'),
-                    priority: 'high'
-                },
-                {
-                    id: '5',
-                    type: 'reminder',
-                    title: t('reminder_leads_need_followup').replace('%s', '5'),
-                    message: t('leads_not_responded_followup'),
-                    time: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
-                    read: true,
-                    actionable: true,
-                    actionLabel: t('view_leads'),
-                    priority: 'medium'
-                },
-                {
-                    id: '6',
-                    type: 'lead',
-                    title: t('new_message_from_lead'),
-                    message: t('lead_message').replace('%s', t('moshe_golan') || 'משה גולן').replace('%s', t('whitening_info') || '"אשמח לפרטים נוספים על טיפול הלבנה"'),
-                    time: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
-                    read: true,
-                    actionable: true,
-                    actionLabel: t('reply'),
-                    priority: 'medium',
-                    metadata: { leadId: '103', leadName: 'משה גולן' }
+        (async () => {
+            try {
+                const data = await settingsService.getSettings();
+                if (data?.notificationSettings) {
+                    setSettings({
+                        leadAlerts: data.notificationSettings.leadAlerts,
+                        systemAlerts: data.notificationSettings.automationAlerts ?? data.notificationSettings.systemAlerts ?? true,
+                        emailNotifications: data.notificationSettings.emailNotifications,
+                        soundAlerts: data.notificationSettings.pushNotifications,
+                        desktopNotifications: data.notificationSettings.pushNotifications,
+                        dailyDigest: data.notificationSettings.dailyDigest,
+                        marketingAlerts: data.notificationSettings.marketingEmails,
+                    });
                 }
-            ]);
-        } catch (error) {
-            console.error('Error loading notifications:', error);
-            toast({
-                title: t("error"),
-                description: t("error_loading_notifications"),
-                variant: "destructive"
-            });
-        } finally {
-            setIsLoading(false);
-        }
-    };
-
-    const markAsRead = async (id: string) => {
-        try {
-            // Simulate API call
-            await new Promise(resolve => setTimeout(resolve, 300));
-
-            setNotifications(prev =>
-                prev.map(n => n.id === id ? { ...n, read: true } : n)
-            );
-
-            toast({
-                title: t("marked_as_read"),
-                description: t("notification_marked_read") || "ההתראה סומנה כנקראה",
-            });
-        } catch (error) {
-            console.error('Error marking as read:', error);
-        }
-    };
-
-    const markAllAsRead = async () => {
-        try {
-            // Simulate API call
-            await new Promise(resolve => setTimeout(resolve, 500));
-
-            setNotifications(prev =>
-                prev.map(n => ({ ...n, read: true }))
-            );
-
-            toast({
-                title: t("all_read") || "הכל נקרא",
-                description: t("all_notifications_read") || "כל ההתראות סומנו כנקראו",
-            });
-        } catch (error) {
-            console.error('Error marking all as read:', error);
-        }
-    };
-
-    const deleteNotification = async (id: string) => {
-        try {
-            // Simulate API call
-            await new Promise(resolve => setTimeout(resolve, 300));
-
-            setNotifications(prev => prev.filter(n => n.id !== id));
-
-            toast({
-                title: t("deleted"),
-                description: t("notification_deleted") || "ההתראה נמחקה",
-            });
-        } catch (error) {
-            console.error('Error deleting notification:', error);
-        }
-    };
-
-    const clearAll = async () => {
-        try {
-            // Simulate API call
-            await new Promise(resolve => setTimeout(resolve, 500));
-
-            setNotifications([]);
-
-            toast({
-                title: t("all_cleared") || "הכל נקה",
-                description: t("all_notifications_cleared") || "כל ההתראות נמחקו",
-            });
-        } catch (error) {
-            console.error('Error clearing notifications:', error);
-        }
-    };
+            } catch (error) {
+                console.error("Failed to load notification settings", error);
+            }
+        })();
+    }, []);
 
     const saveSettings = async () => {
         try {
-            // Simulate API call
-            await new Promise(resolve => setTimeout(resolve, 500));
-
+            const payload = {
+                emailNotifications: settings.emailNotifications,
+                pushNotifications: settings.desktopNotifications || settings.soundAlerts,
+                leadAlerts: settings.leadAlerts,
+                automationAlerts: settings.systemAlerts,
+                dailyDigest: settings.dailyDigest,
+                weeklyReport: false,
+                marketingEmails: settings.marketingAlerts
+            };
+            await settingsService.updateNotifications(payload);
             toast({
-                title: t("settings_saved") || "הגדרות נשמרו",
-                description: t("notification_preferences_updated") || "העדפות ההתראות עודכנו",
+                title: t("settings_saved"),
+                description: t("notification_preferences_updated"),
             });
         } catch (error) {
             console.error('Error saving settings:', error);
+            toast({
+                title: t("error"),
+                description: t("notification_save_failed"),
+                variant: "destructive"
+            });
         }
     };
 
-    const filteredNotifications = notifications.filter(n => {
+    const markNotificationSilentRead = useCallback(async (notification: NotificationItem) => {
+        if (notification.read) return;
+        try {
+            await markAsRead(notification.id, { silent: true });
+        } catch (error) {
+            console.error("Unable to mark notification read:", error);
+        }
+    }, [markAsRead]);
+
+    const handleNotificationActionClick = useCallback(async (notification: NotificationItem) => {
+        await markNotificationSilentRead(notification);
+        if (notification.actionLink) {
+            window.location.href = notification.actionLink;
+            return;
+        }
+        const leadId = notification.metadata?.leadId;
+        if (leadId) {
+            navigate(`/leads/${leadId}`);
+        }
+    }, [markNotificationSilentRead, navigate]);
+
+    const filteredNotifications: NotificationItem[] = notifications.filter(n => {
         if (filter === 'unread') return !n.read;
         if (filter === 'high') return n.priority === 'high';
         if (filter !== 'all') return n.type === filter;
         return true;
     });
-
-    const unreadCount = notifications.filter(n => !n.read).length;
 
     const formatTime = (time: string) => {
         try {
@@ -329,9 +280,9 @@ export default function NotificationsCenter() {
                         )}
                     </div>
                     <div>
-                        <h1 className="text-2xl font-extrabold text-foreground">{t("notifications_center")}</h1>
+                        <h1 className="text-2xl font-semibold text-foreground font-display">{t("notifications_title")}</h1>
                         <p className="text-sm text-muted-foreground mt-0.5">
-                            {t("notifications_description")}
+            {t("notifications_subtitle")}
                         </p>
                     </div>
                 </div>
@@ -370,7 +321,7 @@ export default function NotificationsCenter() {
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
                                 className="cursor-pointer text-destructive"
-                                onClick={clearAll}
+                                onClick={async () => await clearAll()}
                             >
                                 <Trash2 className="h-4 w-4 ml-2" />
                                 {t("clear_all")}
@@ -381,7 +332,7 @@ export default function NotificationsCenter() {
                         variant="outline"
                         size="icon"
                         className="rounded-xl"
-                        onClick={loadNotifications}
+                        onClick={fetchNotifications}
                         disabled={isLoading}
                     >
                         <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
@@ -451,12 +402,13 @@ export default function NotificationsCenter() {
                             return (
                                 <div
                                     key={notification.id}
-                                    className={cn(
-                                        "relative rounded-2xl border p-4 transition-all",
-                                        notification.read ? "border-border bg-card" : "border-primary/20 bg-primary/5",
-                                        notification.priority === 'high' && !notification.read &&
-                                        (language === 'he' ? "border-r-4 border-r-destructive" : "border-l-4 border-l-destructive")
-                                    )}
+                                className={cn(
+                                    "relative rounded-2xl border p-4 transition-all cursor-pointer",
+                                    notification.read ? "border-border bg-card" : "border-primary/20 bg-primary/5",
+                                    notification.priority === 'high' && !notification.read &&
+                                    (language === 'he' ? "border-r-4 border-r-destructive" : "border-l-4 border-l-destructive")
+                                )}
+                                onClick={() => markNotificationSilentRead(notification)}
                                 >
                                     <div className="flex gap-4">
                                         <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center shrink-0", notificationColors[notification.type])}>
@@ -472,7 +424,7 @@ export default function NotificationsCenter() {
                                                         )}
                                                     </h4>
                                                     <p className="text-sm text-muted-foreground mt-1">
-                                                        {notification.message}
+                                                        {formatNotificationMessage(notification)}
                                                     </p>
                                                     {notification.metadata?.value && (
                                                         <p className="text-xs font-bold text-success mt-2">
@@ -491,22 +443,30 @@ export default function NotificationsCenter() {
                                                             </Button>
                                                         </DropdownMenuTrigger>
                                                         <DropdownMenuContent align={language === 'he' ? 'start' : 'end'} className="rounded-xl">
-                                                            <DropdownMenuItem onClick={() => markAsRead(notification.id)} className="cursor-pointer">
-                                                                <CheckCheck className="h-4 w-4 ml-2" />
-                                                                {t("mark_as_read")}
-                                                            </DropdownMenuItem>
-                                                            <DropdownMenuItem onClick={() => deleteNotification(notification.id)} className="cursor-pointer text-destructive">
-                                                                <Trash2 className="h-4 w-4 ml-2" />
-                                                                {t("delete")}
-                                                            </DropdownMenuItem>
+                                                    <DropdownMenuItem onClick={async () => await markAsRead(notification.id)} className="cursor-pointer">
+                                                        <CheckCheck className="h-4 w-4 ml-2" />
+                                                        {t("mark_as_read")}
+                                                    </DropdownMenuItem>
+                                                    <DropdownMenuItem onClick={async () => await deleteNotification(notification.id)} className="cursor-pointer text-destructive">
+                                                        <Trash2 className="h-4 w-4 ml-2" />
+                                                        {t("delete")}
+                                                    </DropdownMenuItem>
                                                         </DropdownMenuContent>
                                                     </DropdownMenu>
                                                 </div>
                                             </div>
                                             {notification.actionable && (
                                                 <div className="mt-3">
-                                                    <Button size="sm" variant="outline" className="rounded-lg h-8 text-xs">
-                                                        {notification.actionLabel}
+                                                    <Button
+                                                        size="sm"
+                                                        variant="outline"
+                                                        className="rounded-lg h-8 text-xs"
+                                                        onClick={(event) => {
+                                                            event.stopPropagation();
+                                                            handleNotificationActionClick(notification);
+                                                        }}
+                                                    >
+                                                        {notification.actionLabel || t("view_lead")}
                                                         <Eye className="h-3 w-3 mr-2" />
                                                     </Button>
                                                 </div>
@@ -537,10 +497,10 @@ export default function NotificationsCenter() {
                             </CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-4">
-                            <div className="flex items-center justify-between">
+                            <div className="flex items-center justify-between" dir={isRTL ? "ltr" : undefined}>
                                 <div>
-                                    <p className="font-medium">{t("lead_alerts")}</p>
-                                    <p className="text-xs text-muted-foreground">{t("new_leads_and_messages")}</p>
+                                    <p className={cn("font-medium", isRTL && "text-right")}>{t("lead_alerts")}</p>
+                                    <p className={cn("text-xs text-muted-foreground", isRTL && "text-right")}>{t("new_leads_and_messages")}</p>
                                 </div>
                                 <Switch
                                     checked={settings.leadAlerts}
@@ -550,10 +510,10 @@ export default function NotificationsCenter() {
                                 />
                             </div>
 
-                            <div className="flex items-center justify-between">
+                            <div className="flex items-center justify-between" dir={isRTL ? "ltr" : undefined}>
                                 <div>
-                                    <p className="font-medium">{t("system_alerts")}</p>
-                                    <p className="text-xs text-muted-foreground">{t("system_and_automation_updates")}</p>
+                                    <p className={cn("font-medium", isRTL && "text-right")}>{t("system_alerts")}</p>
+                                    <p className={cn("text-xs text-muted-foreground", isRTL && "text-right")}>{t("system_and_automation_updates")}</p>
                                 </div>
                                 <Switch
                                     checked={settings.systemAlerts}
@@ -563,10 +523,10 @@ export default function NotificationsCenter() {
                                 />
                             </div>
 
-                            <div className="flex items-center justify-between">
+                            <div className="flex items-center justify-between" dir={isRTL ? "ltr" : undefined}>
                                 <div>
-                                    <p className="font-medium">{t("marketing_alerts")}</p>
-                                    <p className="text-xs text-muted-foreground">{t("promotions_and_updates")}</p>
+                                    <p className={cn("font-medium", isRTL && "text-right")}>{t("marketing_alerts")}</p>
+                                    <p className={cn("text-xs text-muted-foreground", isRTL && "text-right")}>{t("promotions_and_updates")}</p>
                                 </div>
                                 <Switch
                                     checked={settings.marketingAlerts}
@@ -576,10 +536,10 @@ export default function NotificationsCenter() {
                                 />
                             </div>
 
-                            <div className="flex items-center justify-between">
+                            <div className="flex items-center justify-between" dir={isRTL ? "ltr" : undefined}>
                                 <div>
-                                    <p className="font-medium">{t("sound_alerts")}</p>
-                                    <p className="text-xs text-muted-foreground">{t("play_sound_on_new_notification")}</p>
+                                    <p className={cn("font-medium", isRTL && "text-right")}>{t("sound_alerts")}</p>
+                                    <p className={cn("text-xs text-muted-foreground", isRTL && "text-right")}>{t("play_sound_on_new_notification")}</p>
                                 </div>
                                 <Switch
                                     checked={settings.soundAlerts}
@@ -589,10 +549,10 @@ export default function NotificationsCenter() {
                                 />
                             </div>
 
-                            <div className="flex items-center justify-between">
+                            <div className="flex items-center justify-between" dir={isRTL ? "ltr" : undefined}>
                                 <div>
-                                    <p className="font-medium">{t("desktop_notifications")}</p>
-                                    <p className="text-xs text-muted-foreground">{t("receive_notifications_in_browser")}</p>
+                                    <p className={cn("font-medium", isRTL && "text-right")}>{t("desktop_notifications")}</p>
+                                    <p className={cn("text-xs text-muted-foreground", isRTL && "text-right")}>{t("receive_notifications_in_browser")}</p>
                                 </div>
                                 <Switch
                                     checked={settings.desktopNotifications}
@@ -602,10 +562,10 @@ export default function NotificationsCenter() {
                                 />
                             </div>
 
-                            <div className="flex items-center justify-between">
+                            <div className="flex items-center justify-between" dir={isRTL ? "ltr" : undefined}>
                                 <div>
-                                    <p className="font-medium">{t("daily_digest")}</p>
-                                    <p className="text-xs text-muted-foreground">{t("receive_daily_summary_email")}</p>
+                                    <p className={cn("font-medium", isRTL && "text-right")}>{t("daily_digest")}</p>
+                                    <p className={cn("text-xs text-muted-foreground", isRTL && "text-right")}>{t("receive_daily_summary_email")}</p>
                                 </div>
                                 <Switch
                                     checked={settings.dailyDigest}
@@ -615,10 +575,10 @@ export default function NotificationsCenter() {
                                 />
                             </div>
 
-                            <div className="flex items-center justify-between">
+                            <div className="flex items-center justify-between" dir={isRTL ? "ltr" : undefined}>
                                 <div>
-                                    <p className="font-medium">{t("email_notifications")}</p>
-                                    <p className="text-xs text-muted-foreground">{t("receive_email_copy")}</p>
+                                    <p className={cn("font-medium", isRTL && "text-right")}>{t("email_notifications")}</p>
+                                    <p className={cn("text-xs text-muted-foreground", isRTL && "text-right")}>{t("receive_email_copy")}</p>
                                 </div>
                                 <Switch
                                     checked={settings.emailNotifications}

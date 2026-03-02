@@ -1,12 +1,14 @@
 const express = require('express');
 const {
     getAutomations,
+    seedDefaultAutomations,
     getAutomation,
     createAutomation,
     updateAutomation,
     deleteAutomation,
     toggleAutomation,
-    getPerformanceStats
+    getPerformanceStats,
+    getRecentReplies
 } = require('../controllers/automationController');
 const { protect } = require('../middleware/auth');
 
@@ -16,6 +18,8 @@ router.use(protect);
 
 router.get('/', getAutomations);
 router.get('/stats/performance', getPerformanceStats);
+router.get('/replies/recent', getRecentReplies);
+router.post('/defaults', seedDefaultAutomations);
 router.get('/:id', getAutomation);
 router.post('/', createAutomation);
 router.put('/:id', updateAutomation);

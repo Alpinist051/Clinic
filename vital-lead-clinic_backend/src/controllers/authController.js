@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const { validationResult } = require('express-validator');
 const { query } = require('../config/database');
 const User = require('../models/User');
+const Automation = require('../models/Automation');
 const emailService = require('../utils/emailService');
 
 // Generate JWT Token
@@ -16,10 +17,13 @@ const generateToken = (id) => {
 // @route   POST /api/auth/signup
 const signup = async (req, res) => {
     try {
-        console.log("signup request body:", req.body);
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
-            return res.status(400).json({ errors: errors.array() });
+            const details = errors.array();
+            return res.status(400).json({
+                message: details[0]?.msg || 'Invalid signup data',
+                errors: details
+            });
         }
 
         const { email, password, name, phone, clinicName } = req.body;
@@ -50,6 +54,13 @@ const signup = async (req, res) => {
             clinicId,
             role: 'ADMIN'
         });
+
+        // Seed starter automations for new clinics
+        try {
+            await Automation.seedDefaults(clinicId);
+        } catch (seedError) {
+            console.error('Failed to seed default automations during signup:', seedError);
+        }
 
         res.status(201).json({
             message: 'User created successfully. Please verify your email.',
@@ -91,6 +102,10 @@ const login = async (req, res) => {
        VALUES ($1, $2, $3)`,
             ['USER_LOGIN', `User ${user.name} logged in`, user.id]
         );
+
+        if (user.status !== 'active') {
+            await User.update(user.id, { status: 'active' });
+        }
 
         res.json({
             token,
@@ -162,6 +177,7 @@ const resetPassword = async (req, res) => {
 
         // Update password
         await User.updatePassword(user.id, hashedPassword);
+        await User.update(user.id, { status: 'active' });
 
         res.json({ message: 'Password reset successfully' });
     } catch (error) {

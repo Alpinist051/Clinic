@@ -1,30 +1,5 @@
 import api from './api';
-
-// Define interfaces for lead, message, and other types as needed
-interface Lead {
-  id: string;
-  name: string;
-  phone: string;
-  email: string;
-  service?: string;
-  assigned_to_name?: string;
-  assigned_to?: string;
-  source?: string;
-  value?: number;
-  created_at: string;
-  last_contacted?: string;
-  notes?: string;
-  status: string;
-  messages?: Message[];
-}
-
-interface Message {
-  id: string;
-  content: string;
-  type: 'SENT' | 'RECEIVED';
-  timestamp: string;
-  is_business: boolean;
-}
+import type { Lead, LeadMessage as Message } from "@/types/leads";
 
 interface Filters {
   status?: string;
@@ -36,8 +11,19 @@ interface Filters {
 interface BulkUpdateData {
   status?: string;
   assignedTo?: string;
-  [key: string]: any; // Allows for dynamic fields
+  [key: string]: unknown;
 }
+
+interface BulkUpdateResult {
+  message: string;
+  count: number;
+}
+
+type LeadUpsertPayload = Omit<Lead, 'id'> & {
+  id?: string;
+  nextFollowUp?: string;
+  assignedToId?: string | number;
+};
 
 export const leadService = {
   // Get all leads with filters
@@ -68,13 +54,13 @@ export const leadService = {
   },
 
   // Create lead
-  createLead: async (leadData: Lead): Promise<Lead> => {
+  createLead: async (leadData: LeadUpsertPayload): Promise<Lead> => {
     const response = await api.post('/leads', leadData);
     return response.data;
   },
 
   // Update lead
-  updateLead: async (id: string, leadData: Lead): Promise<Lead> => {
+  updateLead: async (id: string, leadData: Partial<LeadUpsertPayload>): Promise<Lead> => {
     const response = await api.put(`/leads/${id}`, leadData);
     return response.data;
   },
@@ -92,7 +78,7 @@ export const leadService = {
   },
 
   // Bulk update leads
-  bulkUpdate: async (leadIds: string[], data: BulkUpdateData): Promise<any> => {
+  bulkUpdate: async (leadIds: string[], data: BulkUpdateData): Promise<BulkUpdateResult> => {
     const response = await api.post('/leads/bulk', { leadIds, data });
     return response.data;
   },

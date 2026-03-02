@@ -1,165 +1,150 @@
-import { useState, useEffect } from 'react';
-import { automationService } from '@/services/automationService';
-import { toast } from '@/hooks/use-toast';
-
-interface Automation {
-    id: string;
-    name: string;
-    active: boolean;
-    // Add other fields that are part of the automation object
-}
-
-interface Stats {
-    totalAutomations: number;
-    activeAutomations: number;
-    // Add other performance stats if needed
-}
+import { useCallback, useEffect, useState } from "react";
+import { automationService } from "@/services/automationService";
+import { toast } from "@/hooks/use-toast";
+import type { Automation, AutomationPerformanceResponse } from "@/types/automation";
 
 interface ErrorResponse {
-    response?: {
-        data?: {
-            message?: string;
-        };
-    };
+  response?: { data?: { message?: string } };
 }
 
-export const useAutomations = () => {
-    const [automations, setAutomations] = useState<Automation[]>([]);
-    const [isLoading, setIsLoading] = useState<boolean>(false);
-    const [error, setError] = useState<string | null>(null);
-    const [stats, setStats] = useState<Stats | null>(null);
+interface UseAutomationsOptions {
+  seedDefaultsOnEmpty?: boolean;
+}
 
-    const fetchAutomations = async (): Promise<void> => {
-        setIsLoading(true);
-        setError(null);
+export const useAutomations = ({ seedDefaultsOnEmpty = false }: UseAutomationsOptions = {}) => {
+  const [automations, setAutomations] = useState<Automation[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [stats, setStats] = useState<AutomationPerformanceResponse | null>(null);
+
+  const fetchAutomations = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const data = await automationService.getAutomations();
+      if (seedDefaultsOnEmpty && data.length === 0) {
         try {
-            const data = await automationService.getAutomations();
-            setAutomations(data);
-        } catch (error: ErrorResponse) {
-            setError(error.response?.data?.message || 'שגיאה בטעינת אוטומציות');
+          const seeded = await automationService.seedDefaultAutomations();
+          if (seeded.created?.length) {
+            setAutomations(seeded.created);
             toast({
-                title: "שגיאה",
-                description: 'שגיאה בטעינת אוטומציות',
-                variant: "destructive",
+              title: "Default automations added",
+              description: `${seeded.created.length} automation message rules were created.`,
             });
-        } finally {
-            setIsLoading(false);
+            return;
+          }
+        } catch (seedError) {
+          console.error("Error seeding default automations:", seedError);
         }
+      }
+
+      setAutomations(data);
+    } catch (err: ErrorResponse) {
+      const msg = err.response?.data?.message || "Unable to load automations.";
+      setError(msg);
+      toast({ title: "Error", description: msg, variant: "destructive" });
+    } finally {
+      setIsLoading(false);
+    }
+  }, [seedDefaultsOnEmpty]);
+
+  const fetchStats = useCallback(async () => {
+    try {
+      const data = await automationService.getPerformanceStats();
+      setStats(data);
+    } catch (err) {
+      console.error("Error fetching stats:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    const loadInitialData = async () => {
+      await fetchAutomations();
+      await fetchStats();
     };
 
-    const fetchStats = async (): Promise<void> => {
-        try {
-            const data = await automationService.getPerformanceStats();
-            setStats(data);
-        } catch (error: any) {
-            console.error('Error fetching stats:', error);
-        }
-    };
+    loadInitialData();
+  }, [fetchAutomations, fetchStats]);
 
-    useEffect(() => {
-        fetchAutomations();
-        fetchStats();
-    }, []);
+  const getAutomation = async (id: string) => {
+    try {
+      return await automationService.getAutomation(id);
+    } catch (err: ErrorResponse) {
+      const msg = err.response?.data?.message || "Unable to load automation.";
+      toast({ title: "Error", description: msg, variant: "destructive" });
+      throw err;
+    }
+  };
 
-    const getAutomation = async (id: string): Promise<Automation> => {
-        try {
-            return await automationService.getAutomation(id);
-        } catch (error: ErrorResponse) {
-            toast({
-                title: "שגיאה",
-                description: 'שגיאה בטעינת אוטומציה',
-                variant: "destructive",
-            });
-            throw error;
-        }
-    };
+  const addAutomation = async (automationData: Partial<Automation>) => {
+    try {
+      const newAutomation = await automationService.createAutomation(automationData);
+      setAutomations((prev) => [newAutomation, ...prev]);
+      toast({ title: "Automation created", description: "Automation was created successfully." });
+      await fetchStats();
+      return newAutomation;
+    } catch (err: ErrorResponse) {
+      const msg = err.response?.data?.message || "Unable to create automation.";
+      toast({ title: "Error", description: msg, variant: "destructive" });
+      throw err;
+    }
+  };
 
-    const addAutomation = async (automationData: Omit<Automation, 'id'>): Promise<Automation> => {
-        try {
-            const newAutomation = await automationService.createAutomation(automationData);
-            setAutomations(prev => [newAutomation, ...prev]);
-            toast({
-                title: "אוטומציה נוספה",
-                description: "האוטומציה נוספה בהצלחה",
-            });
-            return newAutomation;
-        } catch (error: ErrorResponse) {
-            toast({
-                title: "שגיאה",
-                description: error.response?.data?.message || 'שגיאה בהוספת אוטומציה',
-                variant: "destructive",
-            });
-            throw error;
-        }
-    };
+  const updateAutomation = async (id: string, automationData: Partial<Automation>) => {
+    try {
+      const updated = await automationService.updateAutomation(id, automationData);
+      setAutomations((prev) => prev.map((a) => (a.id === id ? updated : a)));
+      toast({ title: "Automation updated", description: "Automation was updated successfully." });
+      await fetchStats();
+      return updated;
+    } catch (err: ErrorResponse) {
+      const msg = err.response?.data?.message || "Unable to update automation.";
+      toast({ title: "Error", description: msg, variant: "destructive" });
+      throw err;
+    }
+  };
 
-    const updateAutomation = async (id: string, automationData: Omit<Automation, 'id'>): Promise<Automation> => {
-        try {
-            const updated = await automationService.updateAutomation(id, automationData);
-            setAutomations(prev => prev.map(a => a.id === id ? updated : a));
-            toast({
-                title: "אוטומציה עודכנה",
-                description: "האוטומציה עודכנה בהצלחה",
-            });
-            return updated;
-        } catch (error: ErrorResponse) {
-            toast({
-                title: "שגיאה",
-                description: error.response?.data?.message || 'שגיאה בעדכון אוטומציה',
-                variant: "destructive",
-            });
-            throw error;
-        }
-    };
+  const deleteAutomation = async (id: string) => {
+    try {
+      await automationService.deleteAutomation(id);
+      setAutomations((prev) => prev.filter((a) => a.id !== id));
+      toast({ title: "Automation deleted", description: "Automation was deleted successfully." });
+      await fetchStats();
+    } catch (err: ErrorResponse) {
+      const msg = err.response?.data?.message || "Unable to delete automation.";
+      toast({ title: "Error", description: msg, variant: "destructive" });
+      throw err;
+    }
+  };
 
-    const deleteAutomation = async (id: string): Promise<void> => {
-        try {
-            await automationService.deleteAutomation(id);
-            setAutomations(prev => prev.filter(a => a.id !== id));
-            toast({
-                title: "אוטומציה נמחקה",
-                description: "האוטומציה נמחקה בהצלחה",
-            });
-        } catch (error: ErrorResponse) {
-            toast({
-                title: "שגיאה",
-                description: error.response?.data?.message || 'שגיאה במחיקת אוטומציה',
-                variant: "destructive",
-            });
-            throw error;
-        }
-    };
+  const toggleAutomation = async (id: string) => {
+    try {
+      const updated = await automationService.toggleAutomation(id);
+      setAutomations((prev) => prev.map((a) => (a.id === id ? updated : a)));
+      toast({
+        title: updated.active ? "Automation enabled" : "Automation disabled",
+        description: "Update saved successfully.",
+      });
+      await fetchStats();
+      return updated;
+    } catch (err: ErrorResponse) {
+      const msg = err.response?.data?.message || "Unable to update status.";
+      toast({ title: "Error", description: msg, variant: "destructive" });
+      throw err;
+    }
+  };
 
-    const toggleAutomation = async (id: string): Promise<Automation> => {
-        try {
-            const updated = await automationService.toggleAutomation(id);
-            setAutomations(prev => prev.map(a => a.id === id ? updated : a));
-            toast({
-                title: updated.active ? "אוטומציה הופעלה" : "אוטומציה הושבתה",
-                description: `האוטומציה ${updated.active ? 'הופעלה' : 'הושבתה'} בהצלחה`,
-            });
-            return updated;
-        } catch (error: ErrorResponse) {
-            toast({
-                title: "שגיאה",
-                description: error.response?.data?.message || 'שגיאה בשינוי סטטוס',
-                variant: "destructive",
-            });
-            throw error;
-        }
-    };
-
-    return {
-        automations,
-        isLoading,
-        error,
-        stats,
-        fetchAutomations,
-        fetchStats,
-        getAutomation,
-        addAutomation,
-        updateAutomation,
-        deleteAutomation,
-        toggleAutomation
-    };
+  return {
+    automations,
+    isLoading,
+    error,
+    stats,
+    fetchAutomations,
+    fetchStats,
+    getAutomation,
+    addAutomation,
+    updateAutomation,
+    deleteAutomation,
+    toggleAutomation,
+  };
 };

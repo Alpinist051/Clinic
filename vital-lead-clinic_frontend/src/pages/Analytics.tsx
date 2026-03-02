@@ -245,7 +245,7 @@ export default function Analytics() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-extrabold text-foreground">{t("analytics_title")}</h1>
+          <h1 className="text-2xl font-semibold text-foreground font-display">{t("analytics_title")}</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             {t("analytics_subtitle")}
           </p>
@@ -399,7 +399,7 @@ export default function Analytics() {
                       yAxisId="right"
                       type="monotone"
                       dataKey="revenue"
-                      name={t("revenue") || "הכנסות (₪)"}
+                      name={t("revenue")}
                       stroke="#8B5CF6"
                       strokeWidth={2}
                       dot={{ r: 4 }}

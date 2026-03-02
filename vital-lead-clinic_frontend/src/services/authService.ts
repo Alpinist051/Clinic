@@ -1,4 +1,5 @@
 import api from './api';
+import { normalizeRole } from '@/lib/roles';
 
 export const authService = {
   // Login
@@ -6,18 +7,31 @@ export const authService = {
     const response = await api.post('/auth/login', credentials);
     if (response.data.token) {
       localStorage.setItem('auth_token', response.data.token);
-      localStorage.setItem('user', JSON.stringify(response.data.user));
+      if (response.data.user) {
+        const normalizedUser = {
+          ...response.data.user,
+          role: normalizeRole(response.data.user.role),
+        };
+        localStorage.setItem('user', JSON.stringify(normalizedUser));
+        response.data.user = normalizedUser;
+      }
     }
     return response.data;
   },
 
   // Signup
   signup: async (userData) => {
-    console.log(userData)
     const response = await api.post('/auth/signup', userData);
     if (response.data.token) {
       localStorage.setItem('auth_token', response.data.token);
-      localStorage.setItem('user', JSON.stringify(response.data.user));
+      if (response.data.user) {
+        const normalizedUser = {
+          ...response.data.user,
+          role: normalizeRole(response.data.user.role),
+        };
+        localStorage.setItem('user', JSON.stringify(normalizedUser));
+        response.data.user = normalizedUser;
+      }
     }
     return response.data;
   },

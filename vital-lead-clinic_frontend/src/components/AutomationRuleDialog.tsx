@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Plus, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,12 +6,13 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import type { AutomationRule, LeadStatus } from "@/data/sampleData";
+import type { LeadStatus } from "@/types/leads";
+import type { Automation } from "@/types/automation";
 import { useAutomations } from "@/hooks/useAutomations";
 import { useLanguage } from "@/contexts/LanguageContext";
 
 interface AutomationRuleDialogProps {
-  rule?: AutomationRule;
+  rule?: Automation;
   onSuccess?: () => void;
   trigger?: React.ReactNode;
 }
@@ -19,29 +20,34 @@ interface AutomationRuleDialogProps {
 export default function AutomationRuleDialog({ rule, onSuccess, trigger }: AutomationRuleDialogProps) {
   const { t } = useLanguage();
   const { addAutomation, updateAutomation } = useAutomations();
+  const ALL_STATUSES = "ALL";
   const isEdit = !!rule;
   const [open, setOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [form, setForm] = useState({
-    name: rule?.name || "",
-    trigger: rule?.trigger || "",
-    delayDays: String(rule?.delayDays ?? 0),
-    message: rule?.message || "",
-    targetStatus: (rule?.targetStatus || "new") as LeadStatus,
-    active: rule?.active ?? true,
-  });
-
-  const triggerOptions = [
+  type AutomationTargetStatus = LeadStatus | typeof ALL_STATUSES;
+  const triggerOptions = useMemo(() => [
     { value: "lead_created", label: t("lead_created") },
     { value: "no_response", label: t("no_response") },
     { value: "status_changed_hot", label: t("status_changed_to_hot") },
     { value: "no_contact_days", label: t("no_contact_days") },
     { value: "appointment_booked", label: t("appointment_booked") },
-  ];
+  ], [t]);
+
+  const defaultTriggerValue = triggerOptions[0]?.value || "lead_created";
+
+  const buildFormState = () => ({
+    name: rule?.name || "",
+    trigger: rule?.trigger || defaultTriggerValue,
+    delayDays: String((rule as any)?.delayDays ?? (rule?.trigger_days?.[0] ?? 0)),
+    message: rule?.message || "",
+    targetStatus: ((rule?.target_status as LeadStatus) || ALL_STATUSES) as AutomationTargetStatus,
+    active: rule?.active ?? true,
+  });
+
+  const [form, setForm] = useState(buildFormState);
 
   const handleSubmit = async () => {
-    if (!form.name.trim() || !form.trigger || !form.message.trim()) {
-      // Toast error already shown by the hook
+    if (!form.name.trim() || !form.message.trim()) {
       return;
     }
 
@@ -49,10 +55,9 @@ export default function AutomationRuleDialog({ rule, onSuccess, trigger }: Autom
     try {
       const ruleData = {
         name: form.name.trim(),
-        trigger: form.trigger,
-        delayDays: Number(form.delayDays) || 0,
+        triggerDays: [Number(form.delayDays) || 0],
         message: form.message.trim(),
-        targetStatus: form.targetStatus,
+        targetStatus: form.targetStatus === ALL_STATUSES ? null : form.targetStatus,
         active: form.active,
       };
 
@@ -62,10 +67,10 @@ export default function AutomationRuleDialog({ rule, onSuccess, trigger }: Autom
         await addAutomation(ruleData as any);
       }
 
-      onSuccess?.(); // Notify parent to refresh
+      onSuccess?.();
       setOpen(false);
-    } catch (error) {
-      // Error already handled by the hook with toast notification
+    } catch {
+      // handled in hook toast
     } finally {
       setIsSubmitting(false);
     }
@@ -74,10 +79,10 @@ export default function AutomationRuleDialog({ rule, onSuccess, trigger }: Autom
   const resetForm = () => {
     setForm({
       name: rule?.name || "",
-      trigger: rule?.trigger || "",
-      delayDays: String(rule?.delayDays ?? 0),
+      trigger: (rule as any)?.trigger || "",
+      delayDays: String((rule as any)?.delayDays ?? (rule?.trigger_days?.[0] ?? 0)),
       message: rule?.message || "",
-      targetStatus: (rule?.targetStatus || "new") as LeadStatus,
+      targetStatus: ((rule?.target_status as LeadStatus) || ALL_STATUSES) as AutomationTargetStatus,
       active: rule?.active ?? true,
     });
   };
@@ -147,17 +152,18 @@ export default function AutomationRuleDialog({ rule, onSuccess, trigger }: Autom
             <Label className="text-xs font-semibold">{t("target_status")}</Label>
             <Select
               value={form.targetStatus}
-              onValueChange={(v) => setForm({ ...form, targetStatus: v as LeadStatus })}
+              onValueChange={(v) => setForm({ ...form, targetStatus: v as AutomationTargetStatus })}
               disabled={isSubmitting}
             >
               <SelectTrigger className="rounded-xl">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="new">{t("status_new")}</SelectItem>
-                <SelectItem value="hot">{t("status_hot")} 🔥</SelectItem>
-                <SelectItem value="closed">{t("status_closed")} ✓</SelectItem>
-                <SelectItem value="lost">{t("status_lost")}</SelectItem>
+                <SelectItem value={ALL_STATUSES}>{t("all_leads")}</SelectItem>
+                <SelectItem value="NEW">{t("status_new")}</SelectItem>
+                <SelectItem value="HOT">{t("status_hot")}</SelectItem>
+                <SelectItem value="CLOSED">{t("status_closed")}</SelectItem>
+                <SelectItem value="LOST">{t("status_lost")}</SelectItem>
               </SelectContent>
             </Select>
           </div>

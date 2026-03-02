@@ -68,12 +68,36 @@ class Lead {
     }
 
     static async create(leadData) {
-        const { name, phone, email, service, source, value, notes, assignedToId, clinicId } = leadData;
+        const {
+            name,
+            phone,
+            email,
+            service,
+            status = 'NEW',
+            source,
+            value,
+            notes,
+            nextFollowUp,
+            assignedToId,
+            clinicId
+        } = leadData;
         const result = await query(
-            `INSERT INTO leads (name, phone, email, service, source, value, notes, assigned_to_id, clinic_id) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
+            `INSERT INTO leads (name, phone, email, service, status, source, value, notes, next_follow_up, assigned_to_id, clinic_id) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) 
        RETURNING *`,
-            [name, phone, email, service, source, value, notes, assignedToId, clinicId]
+            [name, phone, email, service, status, source, value, notes, nextFollowUp || null, assignedToId, clinicId]
+        );
+        return result.rows[0];
+    }
+
+    static async findByPhone(phone) {
+        if (!phone) return null;
+        const normalized = phone.replace(/[^0-9+]/g, '');
+        const result = await query(
+            `SELECT * FROM leads 
+             WHERE regexp_replace(phone, '[^0-9+]', '', 'g') = $1
+             LIMIT 1`,
+            [normalized]
         );
         return result.rows[0];
     }
@@ -88,6 +112,7 @@ class Lead {
                 let dbKey = key;
                 if (key === 'assignedToId') dbKey = 'assigned_to_id';
                 if (key === 'lastContacted') dbKey = 'last_contacted';
+                if (key === 'nextFollowUp') dbKey = 'next_follow_up';
 
                 fields.push(`${dbKey} = $${paramIndex}`);
                 values.push(value);
@@ -175,6 +200,7 @@ class Lead {
          COUNT(CASE WHEN status = 'NEW' AND created_at >= $2 THEN 1 END) as new,
          COUNT(CASE WHEN status = 'HOT' THEN 1 END) as hot,
          COUNT(CASE WHEN status = 'CLOSED' AND updated_at >= $2 THEN 1 END) as closed,
+         COUNT(CASE WHEN status = 'LOST' THEN 1 END) as lost,
          COALESCE(SUM(CASE WHEN status = 'CLOSED' THEN value ELSE 0 END), 0) as revenue
        FROM leads 
        WHERE clinic_id = $1`,

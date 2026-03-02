@@ -35,7 +35,8 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
-import { useLanguage } from "@/contexts/LanguageContext";
+import { useLanguage, type Language } from "@/contexts/LanguageContext";
+import { settingsService } from "@/services/settingsService";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -79,32 +80,43 @@ interface Integration {
 }
 
 export default function SettingsPage() {
-  const { user } = useAuth();
-  const { t, language } = useLanguage();
+  const { user, refreshUser, logout } = useAuth();
+  const { t, language, setLanguage } = useLanguage();
+  const isRTL = language === 'he' || language === 'ar';
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [hasLoadedSettings, setHasLoadedSettings] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
 
   // Clinic settings
   const [clinicSettings, setClinicSettings] = useState<ClinicSettings>({
     id: '1',
-    name: t('clinic_herzliya') || 'מרפאת שיניים הרצליה',
+    name: t('clinic_herzliya'),
     email: 'clinic@herzliya.co.il',
     phone: '09-1234567',
-    address: t('herzliya_address') || 'הרצל 12, הרצליה',
+    address: t('herzliya_address'),
     timezone: 'Asia/Jerusalem',
-    language: 'he',
+    language,
     currency: 'ILS'
   });
+
+  const actionAlignment = isRTL ? "mr-auto" : "ml-auto";
+
+  const languageOptions: Array<{ value: Language; label: string }> = [
+    { value: "he", label: t("hebrew") },
+    { value: "en", label: t("english") },
+  ];
 
   // User profile
   const [profile, setProfile] = useState<UserProfile>({
     id: '1',
-    name: user?.name || t('admin_role') || 'מנהל מערכת',
+    name: user?.name || t('admin_role'),
     email: user?.email || 'admin@clinic.co.il',
     phone: '050-1234567',
     role: 'admin',
+    avatar: user?.avatar || '',
     createdAt: '2024-01-15'
   });
 
@@ -167,7 +179,8 @@ export default function SettingsPage() {
     autoBackup: true,
     backupFrequency: 'daily',
     retentionDays: 30,
-    lastBackup: '2025-02-23 03:00'
+    lastBackup: '2025-02-23 03:00',
+    lastBackupFile: ''
   });
 
   // Load data
@@ -178,10 +191,60 @@ export default function SettingsPage() {
   const loadSettings = async () => {
     setIsLoading(true);
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      const data = await settingsService.getSettings();
 
-      // Data would be loaded from API here
+      if (data?.clinic) {
+        const safeLanguage: Language = data.clinic.language === "he" ? "he" : "en";
+        setClinicSettings({
+          id: data.clinic.id,
+          name: data.clinic.name,
+          email: data.clinic.email,
+          phone: data.clinic.phone,
+          address: data.clinic.address,
+          logo: data.clinic.logo || undefined,
+          timezone: data.clinic.timezone,
+          language: safeLanguage,
+          currency: data.clinic.currency,
+        });
+        setLanguage(safeLanguage);
+      }
+
+      if (data?.profile) {
+        setProfile({
+          id: data.profile.id,
+          name: data.profile.name,
+          email: data.profile.email,
+          phone: data.profile.phone || '',
+          role: data.profile.role,
+          avatar: data.profile.avatar || '',
+          createdAt: data.profile.createdAt,
+        });
+      }
+
+      if (data?.notificationSettings) {
+        setNotificationSettings(data.notificationSettings);
+      }
+
+      if (data?.backupSettings) {
+        setBackupSettings({
+          autoBackup: data.backupSettings.autoBackup,
+          backupFrequency: data.backupSettings.backupFrequency,
+          retentionDays: data.backupSettings.retentionDays,
+          lastBackup: data.backupSettings.lastBackup || '',
+          lastBackupFile: data.backupSettings.lastBackupFile || ''
+        });
+      }
+
+      if (data?.integrations) {
+        setIntegrations((prev) =>
+          prev.map((integration) => ({
+            ...integration,
+            status: (data.integrations[integration.type]?.status as Integration["status"]) || integration.status,
+          }))
+        );
+      }
+
+      setHasLoadedSettings(true);
     } catch (error) {
       console.error('Error loading settings:', error);
       toast({
@@ -194,11 +257,67 @@ export default function SettingsPage() {
     }
   };
 
+  useEffect(() => {
+    if (!hasLoadedSettings) return;
+    const timeout = setTimeout(() => {
+      settingsService.updateBackupSettings(backupSettings).catch(() => {
+        toast({
+          title: t("error"),
+          description: t("settings_save_failed"),
+          variant: "destructive"
+        });
+      });
+    }, 800);
+    return () => clearTimeout(timeout);
+  }, [backupSettings, hasLoadedSettings, t]);
+
+  const handleLanguageSelect = (value: string) => {
+    const nextLanguage: Language = value === "he" ? "he" : "en";
+    setClinicSettings((prev) => ({ ...prev, language: nextLanguage }));
+    setLanguage(nextLanguage);
+  };
+
+  const handleRemoveLogo = async () => {
+    if (!clinicSettings.logo) return;
+    setIsSaving(true);
+    try {
+      const updated = await settingsService.updateClinic({ logo: null });
+      setClinicSettings((prev) => ({
+        ...prev,
+        logo: updated.logo || undefined,
+      }));
+      toast({
+        title: t("settings_saved"),
+        description: t("logo_removed"),
+      });
+    } catch (error) {
+      toast({
+        title: t("error"),
+        description: t("logo_remove_failed"),
+        variant: "destructive",
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   const handleSaveClinic = async () => {
     setIsSaving(true);
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      const updated = await settingsService.updateClinic({
+        name: clinicSettings.name,
+        email: clinicSettings.email,
+        phone: clinicSettings.phone,
+        address: clinicSettings.address,
+        timezone: clinicSettings.timezone,
+        language: clinicSettings.language,
+        currency: clinicSettings.currency,
+        logo: clinicSettings.logo,
+      });
+
+      if (updated) {
+        setClinicSettings((prev) => ({ ...prev, ...updated }));
+      }
 
       toast({
         title: t("settings_saved"),
@@ -218,8 +337,21 @@ export default function SettingsPage() {
   const handleSaveProfile = async () => {
     setIsSaving(true);
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      const updated = await settingsService.updateProfile({
+        name: profile.name,
+        email: profile.email,
+        phone: profile.phone,
+      });
+
+      if (updated) {
+        setProfile((prev) => ({
+          ...prev,
+          name: updated.name ?? prev.name,
+          email: updated.email ?? prev.email,
+          phone: updated.phone ?? prev.phone,
+        }));
+        await refreshUser?.();
+      }
 
       toast({
         title: t("profile_updated"),
@@ -257,8 +389,7 @@ export default function SettingsPage() {
 
     setIsSaving(true);
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await settingsService.changePassword(passwordData.current, passwordData.new);
 
       setPasswordData({ current: '', new: '', confirm: '' });
 
@@ -280,8 +411,7 @@ export default function SettingsPage() {
   const handleSaveNotifications = async () => {
     setIsSaving(true);
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await settingsService.updateNotifications(notificationSettings);
 
       toast({
         title: t("settings_saved"),
@@ -300,8 +430,14 @@ export default function SettingsPage() {
 
   const handleBackup = async () => {
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      const updated = await settingsService.runBackup();
+      if (updated) {
+        setBackupSettings((prev) => ({
+          ...prev,
+          lastBackup: updated.lastBackup || prev.lastBackup,
+          lastBackupFile: updated.lastBackupFile ?? prev.lastBackupFile,
+        }));
+      }
 
       toast({
         title: t("backup_completed"),
@@ -316,10 +452,25 @@ export default function SettingsPage() {
     }
   };
 
-  const handleExportData = async () => {
+  const handleExportData = async (format: "csv" | "json" | "pdf") => {
+    setIsExporting(true);
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      const response = await settingsService.exportData(format);
+      const contentType = response.headers['content-type'] || 'application/octet-stream';
+      const disposition = response.headers['content-disposition'] as string | undefined;
+      const suggested = disposition?.match(/filename=\"?([^\";]+)\"?/i)?.[1];
+      const extension = format === 'csv' ? 'csv' : format === 'pdf' ? 'pdf' : 'json';
+      const filename = suggested || `clinic-export-${Date.now()}.${extension}`;
+
+      const blob = new Blob([response.data], { type: contentType });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
 
       toast({
         title: t("export_completed"),
@@ -331,13 +482,14 @@ export default function SettingsPage() {
         description: t("export_failed"),
         variant: "destructive"
       });
+    } finally {
+      setIsExporting(false);
     }
   };
 
   const handleDeleteAccount = async () => {
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await settingsService.deleteAccount();
 
       toast({
         title: t("account_deleted"),
@@ -345,6 +497,7 @@ export default function SettingsPage() {
       });
 
       // Redirect to login
+      logout?.();
       window.location.href = '/login';
     } catch (error) {
       toast({
@@ -357,14 +510,18 @@ export default function SettingsPage() {
 
   const toggleIntegration = async (id: string) => {
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 500));
+      const integration = integrations.find((item) => item.id === id);
+      if (!integration) return;
 
-      setIntegrations(prev => prev.map(int =>
-        int.id === id
-          ? { ...int, status: int.status === 'connected' ? 'disconnected' : 'connected' }
-          : int
-      ));
+      const nextStatus = integration.status === 'connected' ? 'disconnected' : 'connected';
+      await settingsService.updateIntegration(integration.type, nextStatus);
+
+      setIntegrations(prev =>
+        prev.map(int =>
+          int.id === id
+            ? { ...int, status: nextStatus }
+            : int
+        ));
 
       toast({
         title: t("status_updated"),
@@ -377,7 +534,7 @@ export default function SettingsPage() {
 
   if (isLoading) {
     return (
-      <div className="space-y-6" dir={language === 'he' ? 'rtl' : 'ltr'}>
+      <div className="space-y-6" dir={isRTL ? 'rtl' : 'ltr'}>
         <Skeleton className="h-8 w-48" />
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {[...Array(6)].map((_, i) => (
@@ -390,9 +547,9 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="space-y-5 lg:space-y-6" dir={language === 'he' ? 'rtl' : 'ltr'}>
+    <div className="space-y-5 lg:space-y-6" dir={isRTL ? 'rtl' : 'ltr'}>
       <div>
-        <h1 className="text-2xl font-extrabold text-foreground">{t("settings")}</h1>
+        <h1 className="text-2xl font-semibold text-foreground font-display">{t("settings_title")}</h1>
         <p className="text-sm text-muted-foreground mt-0.5">{t("settings_description")}</p>
       </div>
 
@@ -417,16 +574,73 @@ export default function SettingsPage() {
             <CardContent className="space-y-4">
               <div className="flex items-center gap-4 mb-4">
                 <Avatar className="h-20 w-20">
-                  <AvatarFallback className="bg-primary/10 text-primary text-xl">
-                    {clinicSettings.name.charAt(0)}
-                  </AvatarFallback>
+                  {clinicSettings.logo ? (
+                    <AvatarImage src={clinicSettings.logo} alt={clinicSettings.name} />
+                  ) : (
+                    <AvatarFallback className="bg-primary/10 text-primary text-xl">
+                      {clinicSettings.name.charAt(0)}
+                    </AvatarFallback>
+                  )}
                 </Avatar>
-                <div>
-                  <Button variant="outline" size="sm" className="rounded-lg">
-                    <Upload className="h-4 w-4 ml-2" />
-                    {t("upload_logo")}
-                  </Button>
-                  <p className="text-xs text-muted-foreground mt-2">
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      id="logo-upload"
+                      type="file"
+                      accept="image/png, image/jpeg"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        if (file.size > 2 * 1024 * 1024) {
+                          toast({
+                            title: t("error"),
+                            description: t("logo_format"),
+                            variant: "destructive"
+                          });
+                          return;
+                        }
+                        const formData = new FormData();
+                        formData.append('logo', file);
+                        try {
+                          setIsSaving(true);
+                          const { logo } = await settingsService.uploadLogo(formData);
+                          setClinicSettings((prev) => ({ ...prev, logo }));
+                          toast({ title: t("settings_saved"), description: t("clinic_settings_updated") });
+                        } catch (error) {
+                          toast({
+                            title: t("error"),
+                            description: t("settings_save_failed"),
+                            variant: "destructive"
+                          });
+                        } finally {
+                          setIsSaving(false);
+                        }
+                      }}
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="rounded-lg"
+                      onClick={() => document.getElementById('logo-upload')?.click()}
+                      disabled={isSaving}
+                    >
+                      <Upload className="h-4 w-4 ml-2" />
+                      {t("upload_logo")}
+                    </Button>
+                    {clinicSettings.logo && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="rounded-lg text-destructive"
+                        onClick={handleRemoveLogo}
+                        disabled={isSaving}
+                      >
+                        {t("delete")}
+                      </Button>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
                     {t("logo_format")}
                   </p>
                 </div>
@@ -490,15 +704,16 @@ export default function SettingsPage() {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="language">{t("language")}</Label>
-                  <Select value={clinicSettings.language} onValueChange={(v) => setClinicSettings({ ...clinicSettings, language: v })}>
+                  <Select value={clinicSettings.language} onValueChange={handleLanguageSelect}>
                     <SelectTrigger className="rounded-xl">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="he">{t("hebrew")}</SelectItem>
-                      <SelectItem value="en">{t("english")}</SelectItem>
-                      <SelectItem value="ru">{t("russian")}</SelectItem>
-                      <SelectItem value="ar">{t("arabic")}</SelectItem>
+                      {languageOptions.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -518,7 +733,7 @@ export default function SettingsPage() {
               </div>
             </CardContent>
             <CardFooter className="border-t pt-4">
-              <Button onClick={handleSaveClinic} disabled={isSaving} className={language === 'he' ? 'mr-auto' : 'ml-auto'}>
+              <Button onClick={handleSaveClinic} disabled={isSaving} className={actionAlignment}>
                 {isSaving ? (
                   <>
                     <Loader2 className="h-4 w-4 ml-2 animate-spin" />
@@ -582,15 +797,73 @@ export default function SettingsPage() {
             <CardContent className="space-y-4">
               <div className="flex items-center gap-4 mb-4">
                 <Avatar className="h-20 w-20">
-                  <AvatarFallback className="bg-primary/10 text-primary text-xl">
-                    {profile.name.charAt(0)}
-                  </AvatarFallback>
+                  {profile.avatar ? (
+                    <AvatarImage src={profile.avatar} alt={profile.name} />
+                  ) : (
+                    <AvatarFallback className="bg-primary/10 text-primary text-xl">
+                      {profile.name.charAt(0)}
+                    </AvatarFallback>
+                  )}
                 </Avatar>
                 <div>
-                  <Button variant="outline" size="sm" className="rounded-lg">
-                    <Upload className="h-4 w-4 ml-2" />
-                    {t("upload_photo")}
-                  </Button>
+                  <Input
+                    id="avatar-upload"
+                    type="file"
+                    accept="image/png,image/jpeg"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      if (file.size > 2 * 1024 * 1024) {
+                        toast({
+                          title: t("error"),
+                          description: t("photo_format"),
+                          variant: "destructive",
+                        });
+                        return;
+                      }
+                      const formData = new FormData();
+                      formData.append("photo", file);
+                      try {
+                        setIsSaving(true);
+                        const { avatar } = await settingsService.uploadProfilePhoto(formData);
+                        setProfile((prev) => ({ ...prev, avatar }));
+                        await refreshUser?.();
+                        toast({ title: t("profile_updated"), description: t("profile_updated_success") });
+                      } catch (error) {
+                        toast({
+                          title: t("error"),
+                          description: t("settings_save_failed"),
+                          variant: "destructive"
+                        });
+                      } finally {
+                        setIsSaving(false);
+                      }
+                    }}
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="rounded-lg"
+                      onClick={() => document.getElementById("avatar-upload")?.click()}
+                      disabled={isSaving}
+                    >
+                      <Upload className="h-4 w-4 ml-2" />
+                      {t("upload_photo")}
+                    </Button>
+                    {profile.avatar && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="rounded-lg text-destructive"
+                        onClick={() => setProfile((prev) => ({ ...prev, avatar: '' }))}
+                        disabled={isSaving}
+                      >
+                        {t("delete")}
+                      </Button>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -627,7 +900,13 @@ export default function SettingsPage() {
                   <Label htmlFor="profile-role">{t("role")}</Label>
                   <Input
                     id="profile-role"
-                    value={profile.role === 'admin' ? t("admin_role") : t("user")}
+                    value={
+                      profile.role?.toLowerCase() === 'admin'
+                        ? t("admin_role")
+                        : profile.role?.toLowerCase() === 'manager'
+                          ? t("manager_role")
+                          : t("user")
+                    }
                     disabled
                     className="rounded-xl bg-muted"
                   />
@@ -639,7 +918,7 @@ export default function SettingsPage() {
               </div>
             </CardContent>
             <CardFooter className="border-t pt-4">
-              <Button onClick={handleSaveProfile} disabled={isSaving} className={language === 'he' ? 'mr-auto' : 'ml-auto'}>
+              <Button onClick={handleSaveProfile} disabled={isSaving} className={actionAlignment}>
                 {isSaving ? (
                   <>
                     <Loader2 className="h-4 w-4 ml-2 animate-spin" />
@@ -676,7 +955,10 @@ export default function SettingsPage() {
                   <button
                     type="button"
                     onClick={() => setShowApiKey(!showApiKey)}
-                    className="absolute left-3 top-1/2 -translate-y-1/2"
+                    className={cn(
+                      "absolute top-1/2 -translate-y-1/2",
+                      isRTL ? "left-3" : "right-3"
+                    )}
                   >
                     {showApiKey ? (
                       <EyeOff className="h-4 w-4 text-muted-foreground" />
@@ -708,7 +990,7 @@ export default function SettingsPage() {
               </div>
             </CardContent>
             <CardFooter className="border-t pt-4">
-              <Button onClick={handleChangePassword} disabled={isSaving} className={language === 'he' ? 'mr-auto' : 'ml-auto'}>
+              <Button onClick={handleChangePassword} disabled={isSaving} className={actionAlignment}>
                 {isSaving ? (
                   <>
                     <Loader2 className="h-4 w-4 ml-2 animate-spin" />
@@ -849,7 +1131,7 @@ export default function SettingsPage() {
               </div>
             </CardContent>
             <CardFooter className="border-t pt-4">
-              <Button onClick={handleSaveNotifications} disabled={isSaving} className={language === 'he' ? 'mr-auto' : 'ml-auto'}>
+              <Button onClick={handleSaveNotifications} disabled={isSaving} className={actionAlignment}>
                 {isSaving ? (
                   <>
                     <Loader2 className="h-4 w-4 ml-2 animate-spin" />
@@ -996,16 +1278,43 @@ export default function SettingsPage() {
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <Button variant="outline" className="h-auto py-4" onClick={handleExportData}>
-                  <Download className="h-5 w-5 mb-2 mx-auto" />
+                <Button
+                  variant="outline"
+                  className="h-auto py-4"
+                  disabled={isExporting}
+                  onClick={() => handleExportData("csv")}
+                >
+                  {isExporting ? (
+                    <Loader2 className="h-5 w-5 mb-2 mx-auto animate-spin" />
+                  ) : (
+                    <Download className="h-5 w-5 mb-2 mx-auto" />
+                  )}
                   <span>Excel (CSV)</span>
                 </Button>
-                <Button variant="outline" className="h-auto py-4" onClick={handleExportData}>
-                  <Download className="h-5 w-5 mb-2 mx-auto" />
+                <Button
+                  variant="outline"
+                  className="h-auto py-4"
+                  disabled={isExporting}
+                  onClick={() => handleExportData("pdf")}
+                >
+                  {isExporting ? (
+                    <Loader2 className="h-5 w-5 mb-2 mx-auto animate-spin" />
+                  ) : (
+                    <Download className="h-5 w-5 mb-2 mx-auto" />
+                  )}
                   <span>PDF</span>
                 </Button>
-                <Button variant="outline" className="h-auto py-4" onClick={handleExportData}>
-                  <Download className="h-5 w-5 mb-2 mx-auto" />
+                <Button
+                  variant="outline"
+                  className="h-auto py-4"
+                  disabled={isExporting}
+                  onClick={() => handleExportData("json")}
+                >
+                  {isExporting ? (
+                    <Loader2 className="h-5 w-5 mb-2 mx-auto animate-spin" />
+                  ) : (
+                    <Download className="h-5 w-5 mb-2 mx-auto" />
+                  )}
                   <span>JSON</span>
                 </Button>
               </div>
@@ -1057,7 +1366,7 @@ export default function SettingsPage() {
               {t("delete_account_confirmation")}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter className={language === 'he' ? 'flex-row-reverse' : ''}>
+          <AlertDialogFooter className={isRTL ? 'flex-row-reverse' : undefined}>
             <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
             <AlertDialogAction onClick={handleDeleteAccount} className="bg-destructive">
               {t("permanently_delete")}

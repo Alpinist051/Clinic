@@ -1,5 +1,5 @@
 // src/pages/Leads.tsx
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Search, MessageSquare, Phone, ChevronLeft, Users, Trash2,
   Clock, AlertCircle, Filter, Download, Mail, CheckCircle,
@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import StatusBadge from "@/components/StatusBadge";
 import LeadDetail from "@/components/LeadDetail";
 import AddLeadDialog from "@/components/AddLeadDialog";
+import EditLeadDialog from "@/components/EditLeadDialog";
 import { useLeads } from "@/hooks/useLeads";
 import { useAuth } from "@/contexts/AuthContext";
 import { useLanguage } from "@/contexts/LanguageContext";
@@ -41,7 +42,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { LeadStatus } from "@/data/sampleData";
+import type { Lead, LeadStatus } from "@/types/leads";
 import { Progress } from "@/components/ui/progress";
 
 export default function Leads() {
@@ -64,12 +65,16 @@ export default function Leads() {
   const [activeFilter, setActiveFilter] = useState<LeadStatus | "all" | "followup">(
     (searchParams.get('filter') as LeadStatus | "all" | "followup") || "all"
   );
-  const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
+  const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [dateRange, setDateRange] = useState("all");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [selectedLeads, setSelectedLeads] = useState<string[]>([]);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [leadToDelete, setLeadToDelete] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [addLeadOpen, setAddLeadOpen] = useState(false);
+  const [editingLead, setEditingLead] = useState<Lead | null>(null);
+  const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
 
   // Hooks
   const {
@@ -81,24 +86,24 @@ export default function Leads() {
     fetchLeads,
     deleteLead,
     bulkUpdate,
-    getFollowupNeeded,
-    stats
+    getFollowupNeeded
   } = useLeads();
 
   // Load follow-up count
   const [followupCount, setFollowupCount] = useState(0);
 
+  const loadFollowupCount = useCallback(async () => {
+    try {
+      const data = await getFollowupNeeded();
+      setFollowupCount(data.length);
+    } catch (error) {
+      console.error('Error loading followup count:', error);
+    }
+  }, [getFollowupNeeded]);
+
   useEffect(() => {
-    const loadFollowupCount = async () => {
-      try {
-        const data = await getFollowupNeeded();
-        setFollowupCount(data.length);
-      } catch (error) {
-        console.error('Error loading followup count:', error);
-      }
-    };
     loadFollowupCount();
-  }, []);
+  }, [loadFollowupCount]);
 
   // Update filters when search/filter changes
   useEffect(() => {
@@ -121,15 +126,73 @@ export default function Leads() {
 
   }, [search, activeFilter, sourceFilter]);
 
-  // Filter leads for display
-  const filteredLeads = activeFilter === 'followup'
-    ? leads.filter(lead => {
-      const daysSinceLastContact = lead.last_contacted
-        ? Math.floor((new Date() - new Date(lead.last_contacted)) / (1000 * 60 * 60 * 24))
-        : 0;
-      return daysSinceLastContact >= 3 && lead.status !== 'CLOSED' && lead.status !== 'LOST';
-    })
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+  const getReferenceDate = (lead: Lead): Date | null => {
+    const dateValue = lead.last_contacted || lead.created_at || lead.next_follow_up || lead.nextFollowUp;
+    return dateValue ? new Date(dateValue) : null;
+  };
+
+  const getFollowupAgeDays = (lead: Lead): number | null => {
+    const referenceDate = getReferenceDate(lead);
+    if (!referenceDate) {
+      return null;
+    }
+    const now = new Date();
+    return Math.max(0, (now.getTime() - referenceDate.getTime()) / MS_PER_DAY);
+  };
+
+  const needsFollowup = (lead: Lead): boolean => {
+    const days = getFollowupAgeDays(lead);
+    return (
+      days !== null &&
+      days >= 3 &&
+      lead.status !== "CLOSED" &&
+      lead.status !== "LOST"
+    );
+  };
+
+  const matchesDateRange = (lead: Lead): boolean => {
+    if (dateRange === "all") {
+      return true;
+    }
+
+    const referenceDate = getReferenceDate(lead);
+    if (!referenceDate) {
+      return false;
+    }
+
+    const now = new Date();
+    const diffDays = Math.max(0, (now.getTime() - referenceDate.getTime()) / MS_PER_DAY);
+
+    if (dateRange === "today") {
+      return (
+        referenceDate.getDate() === now.getDate() &&
+        referenceDate.getMonth() === now.getMonth() &&
+        referenceDate.getFullYear() === now.getFullYear()
+      );
+    }
+
+    if (dateRange === "week") {
+      return diffDays <= 7;
+    }
+
+    if (dateRange === "month") {
+      return diffDays <= 30;
+    }
+
+    if (dateRange === "3months") {
+      return diffDays <= 90;
+    }
+
+    return true;
+  };
+
+  const leadsAfterFollowupFilter = activeFilter === 'followup'
+    ? leads.filter(needsFollowup)
     : leads;
+
+  const filteredLeads = leadsAfterFollowupFilter.filter(matchesDateRange);
 
   // Stats
   const newCount = leads.filter(l => l.status === 'NEW').length;
@@ -186,6 +249,115 @@ export default function Leads() {
     setLeadToDelete(id);
     setShowDeleteDialog(true);
   };
+
+  const handleLeadCreated = useCallback(() => {
+    fetchLeads();
+    loadFollowupCount();
+  }, [fetchLeads, loadFollowupCount]);
+
+  const handleLeadUpdated = useCallback(() => {
+    fetchLeads();
+    loadFollowupCount();
+  }, [fetchLeads, loadFollowupCount]);
+
+  const toCsvCell = useCallback((value: string | number | boolean | null | undefined) => {
+    if (value === null || value === undefined) {
+      return "";
+    }
+
+    const text = String(value).replace(/"/g, '""');
+    return /[",\n]/.test(text) ? `"${text}"` : text;
+  }, []);
+
+  const toCsvRow = useCallback((values: Array<string | number | boolean | null | undefined>) => {
+    return values.map(toCsvCell).join(",");
+  }, [toCsvCell]);
+
+  const handleExport = useCallback(() => {
+    if (!filteredLeads.length) {
+      toast({
+        title: t("export"),
+        description: t("no_data"),
+      });
+      return;
+    }
+
+    try {
+      setIsExporting(true);
+      const now = new Date();
+      const rows: string[] = [];
+
+      rows.push(toCsvRow(["Leads export"]));
+      rows.push(toCsvRow(["Generated at", now.toISOString()]));
+      rows.push(toCsvRow(["Filter", activeFilter]));
+      rows.push(toCsvRow(["Search", search || "-"]));
+      rows.push(toCsvRow(["Source", sourceFilter]));
+      rows.push("");
+
+      rows.push(
+        toCsvRow([
+          "Name",
+          "Phone",
+          "Email",
+          "Service",
+          "Status",
+          "Source",
+          "Value",
+          "Last Contacted",
+          "Next Follow-up",
+          "Messages",
+          "Needs Follow-up",
+          "Notes",
+        ])
+      );
+
+        filteredLeads.forEach((lead) => {
+          const needsFollowupRow = needsFollowup(lead);
+
+          rows.push(
+            toCsvRow([
+              lead.name || "-",
+              lead.phone || "-",
+              lead.email || "-",
+              lead.service || "-",
+              lead.status || "-",
+              lead.source || "-",
+              lead.value || 0,
+              lead.last_contacted || "-",
+              lead.next_follow_up || lead.nextFollowUp || "-",
+              lead.messages?.length || 0,
+              needsFollowupRow ? "Yes" : "No",
+              lead.notes || "-",
+            ])
+          );
+        });
+
+      const csvContent = rows.join("\n");
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `leads-${now.toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: t("export"),
+        description: "Leads CSV downloaded.",
+      });
+    } catch (error) {
+      console.error("Error exporting leads:", error);
+      toast({
+        title: t("error"),
+        description: "Unable to export leads.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsExporting(false);
+    }
+  }, [filteredLeads, toCsvRow, activeFilter, search, sourceFilter, t]);
 
   const handleConfirmDelete = async () => {
     if (!leadToDelete) return;
@@ -247,11 +419,15 @@ export default function Leads() {
   }
 
   // If viewing single lead
-  if (selectedLeadId) {
+  if (selectedLead) {
     return (
       <LeadDetail
-        leadId={selectedLeadId}
-        onBack={() => setSelectedLeadId(null)}
+        lead={selectedLead}
+        onBack={() => setSelectedLead(null)}
+        onDelete={() => {
+          setSelectedLead(null);
+          fetchLeads();
+        }}
       />
     );
   }
@@ -261,17 +437,21 @@ export default function Leads() {
       {/* Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-extrabold text-foreground">{t("leads")}</h1>
+          <h1 className="text-2xl font-semibold text-foreground font-display">Leads & Patients</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            {t("manage_leads")}
+            Prioritize every inquiry, track next steps, and close faster.
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="rounded-xl">
-            <Download className="h-4 w-4 ml-2" />
+          <Button variant="outline" size="sm" className="rounded-xl" onClick={handleExport} disabled={isExporting}>
+            {isExporting ? (
+              <Loader2 className="h-4 w-4 ml-2 animate-spin" />
+            ) : (
+              <Download className="h-4 w-4 ml-2" />
+            )}
             {t("export")}
           </Button>
-          <AddLeadDialog onSuccess={() => fetchLeads()} />
+          <AddLeadDialog open={addLeadOpen} onOpenChange={setAddLeadOpen} onSuccess={handleLeadCreated} />
         </div>
       </div>
 
@@ -352,10 +532,13 @@ export default function Leads() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">{t("all_leads")}</SelectItem>
-              <SelectItem value="וואטסאפ">WhatsApp</SelectItem>
-              <SelectItem value="פייסבוק">Facebook</SelectItem>
-              <SelectItem value="אינסטגרם">Instagram</SelectItem>
-              <SelectItem value="המלצה">{t("smile_recommendation")}</SelectItem>
+              <SelectItem value="WhatsApp">{t("source_whatsapp")}</SelectItem>
+              <SelectItem value="Facebook">{t("source_facebook")}</SelectItem>
+              <SelectItem value="Instagram">{t("source_instagram")}</SelectItem>
+              <SelectItem value="Website">{t("source_website")}</SelectItem>
+              <SelectItem value="Smile recommendation">{t("smile_recommendation")}</SelectItem>
+              <SelectItem value="Referral">{t("source_referral")}</SelectItem>
+              <SelectItem value="Google Ads">{t("source_google_ads")}</SelectItem>
             </SelectContent>
           </Select>
           <Select value={dateRange} onValueChange={setDateRange}>
@@ -367,7 +550,7 @@ export default function Leads() {
               <SelectItem value="today">{t("today")}</SelectItem>
               <SelectItem value="week">{t("last_week_option")}</SelectItem>
               <SelectItem value="month">{t("last_month_option")}</SelectItem>
-              <SelectItem value="3months">3 {t("months")}</SelectItem>
+              <SelectItem value="3months">{t("last_3_months")}</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -439,18 +622,17 @@ export default function Leads() {
       {/* Mobile Cards */}
       <div className="space-y-3 lg:hidden">
         {filteredLeads.map((lead) => {
-          const daysSinceLastContact = lead.last_contacted
-            ? Math.floor((new Date() - new Date(lead.last_contacted)) / (1000 * 60 * 60 * 24))
-            : 0;
-          const needsFollowup = daysSinceLastContact >= 3 && lead.status !== 'CLOSED' && lead.status !== 'LOST';
+          const followupDays = getFollowupAgeDays(lead);
+          const daysSinceLastContact = followupDays !== null ? Math.floor(followupDays) : 0;
+          const needsFollowupFlag = needsFollowup(lead);
 
           return (
             <div
               key={lead.id}
-              onClick={() => setSelectedLeadId(lead.id)}
+              onClick={() => setSelectedLead(lead)}
               className={cn(
                 "w-full rounded-2xl border p-4 text-right shadow-card transition-all hover:shadow-card-hover active:scale-[0.99] relative cursor-pointer",
-                needsFollowup ? "border-warning/50 bg-warning/5" : "border-border bg-card"
+                needsFollowupFlag ? "border-warning/50 bg-warning/5" : "border-border bg-card"
               )}
             >
               {/* Selection Checkbox */}
@@ -471,7 +653,7 @@ export default function Leads() {
                 <div className="absolute top-2 left-2">
                   <Badge variant="outline" className="bg-warning/10 text-warning border-warning/20 text-[10px]">
                     <Clock className="h-3 w-3 ml-1" />
-                    {daysSinceLastContact} ימים
+                    {daysSinceLastContact} {t("days")}
                   </Badge>
                 </div>
               )}
@@ -521,43 +703,49 @@ export default function Leads() {
       {/* Desktop Table */}
       <div className="hidden lg:block rounded-2xl border border-border bg-card shadow-card overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm text-center">
             <thead>
-              <tr className="border-b border-border text-right text-xs text-muted-foreground bg-muted/30">
-                <th className="px-5 py-3.5 w-10">
+              <tr className="border-b border-border text-center text-xs text-muted-foreground bg-muted/30">
+                <th className="px-5 py-3.5 w-10 text-center">
                   <Checkbox
                     checked={selectedLeads.length === filteredLeads.length && filteredLeads.length > 0}
                     onCheckedChange={handleSelectAll}
                   />
                 </th>
-                <th className="px-5 py-3.5 font-semibold">{t("table_name")}</th>
-                <th className="px-5 py-3.5 font-semibold">{t("table_phone")}</th>
-                <th className="px-5 py-3.5 font-semibold">{t("table_service")}</th>
-                <th className="px-5 py-3.5 font-semibold">{t("table_status")}</th>
-                <th className="px-5 py-3.5 font-semibold">{t("table_source")}</th>
-                <th className="px-5 py-3.5 font-semibold">{t("table_value")}</th>
-                <th className="px-5 py-3.5 font-semibold">{t("table_last_message")}</th>
-                <th className="px-5 py-3.5 font-semibold">{t("table_followup")}</th>
+                <th className="px-5 py-3.5 text-center font-semibold">{t("table_name")}</th>
+                <th className="px-5 py-3.5 text-center font-semibold">{t("table_phone")}</th>
+                <th className="px-5 py-3.5 text-center font-semibold">{t("table_service")}</th>
+                <th className="px-5 py-3.5 text-center font-semibold">{t("table_status")}</th>
+                <th className="px-5 py-3.5 text-center font-semibold">{t("table_source")}</th>
+                <th className="px-5 py-3.5 text-center font-semibold">{t("table_value")}</th>
+                <th className="px-5 py-3.5 text-center font-semibold">{t("table_last_message")}</th>
+                <th className="px-5 py-3.5 text-center font-semibold">{t("table_followup")}</th>
                 <th className="px-5 py-3.5"></th>
               </tr>
             </thead>
             <tbody>
               {filteredLeads.map((lead) => {
-                const daysSinceLastContact = lead.last_contacted
-                  ? Math.floor((new Date() - new Date(lead.last_contacted)) / (1000 * 60 * 60 * 24))
-                  : 0;
-                const needsFollowup = daysSinceLastContact >= 3 && lead.status !== 'CLOSED' && lead.status !== 'LOST';
+                const followupDays = getFollowupAgeDays(lead);
+                const daysSinceLastContact = followupDays !== null ? Math.floor(followupDays) : 0;
+                const needsFollowupFlag = needsFollowup(lead);
+                const lastMessageLabel = lead.last_contacted
+                  ? daysSinceLastContact === 0
+                    ? t("today")
+                    : daysSinceLastContact === 1
+                      ? t("yesterday")
+                      : `${daysSinceLastContact} ${t("days_ago")}`
+                  : t("no_messages");
 
                 return (
                   <tr
                     key={lead.id}
-                    onClick={() => setSelectedLeadId(lead.id)}
+                    onClick={() => setSelectedLead(lead)}
                     className={cn(
                       "border-b border-border last:border-0 hover:bg-muted/40 cursor-pointer transition-colors",
-                      needsFollowup && "bg-warning/5"
+                      needsFollowupFlag && "bg-warning/5"
                     )}
                   >
-                    <td className="px-5 py-3.5" onClick={(e) => e.stopPropagation()}>
+                    <td className="px-5 py-3.5 text-center" onClick={(e) => e.stopPropagaation()}>
                       <Checkbox
                         checked={selectedLeads.includes(lead.id)}
                         onCheckedChange={(checked) => {
@@ -569,63 +757,73 @@ export default function Leads() {
                         }}
                       />
                     </td>
-                    <td className="px-5 py-3.5">
-                      <div className="flex items-center gap-3">
+                    <td className="px-5 py-3.5 text-center">
+                      <div className="flex items-center justify-center gap-3">
                         <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
                           {lead.name?.charAt(0) || '?'}
                         </div>
                         <span className="font-semibold text-foreground">{lead.name}</span>
                       </div>
                     </td>
-                    <td className="px-5 py-3.5 text-muted-foreground font-mono text-xs" dir="ltr">
+                    <td className="px-5 py-3.5 text-center text-muted-foreground font-mono text-xs" dir="ltr">
                       {lead.phone}
                     </td>
-                    <td className="px-5 py-3.5 text-muted-foreground">{lead.service || '-'}</td>
-                    <td className="px-5 py-3.5"><StatusBadge status={lead.status} /></td>
-                    <td className="px-5 py-3.5 text-muted-foreground">{lead.source || '-'}</td>
-                    <td className="px-5 py-3.5 font-bold text-foreground">
+                    <td className="px-5 py-3.5 text-center text-muted-foreground">{lead.service || '-'}</td>
+                    <td className="px-5 py-3.5 text-center"><StatusBadge status={lead.status} /></td>
+                    <td className="px-5 py-3.5 text-center text-muted-foreground">{lead.source || '-'}</td>
+                    <td className="px-5 py-3.5 text-center font-bold text-foreground">
                       ₪{(lead.value || 0).toLocaleString()}
                     </td>
-                    <td className="px-5 py-3.5 max-w-[200px]">
-                      <div className="flex items-center gap-1">
+                    <td className="px-5 py-3.5 text-center max-w-[200px]">
+                      <div className="flex items-center justify-center gap-1">
                         <MessageSquare className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                        <span className="text-xs text-muted-foreground truncate">
-                          {lead.last_contacted
-                            ? daysSinceLastContact === 0 ? 'היום' :
-                              daysSinceLastContact === 1 ? 'אתמול' :
-                                `לפני ${daysSinceLastContact} ימים`
-                            : 'אין הודעות'}
-                        </span>
+                        <span className="text-xs text-muted-foreground truncate">{lastMessageLabel}</span>
                       </div>
                     </td>
-                    <td className="px-5 py-3.5">
-                      {needsFollowup ? (
+                    <td className="px-5 py-3.5 text-center">
+                      {needsFollowupFlag ? (
                         <Badge variant="outline" className="bg-warning/10 text-warning border-warning/20">
                           <Bell className="h-3 w-3 ml-1" />
-                          דרוש מעקב
+                          {t("requires_attention")}
                         </Badge>
                       ) : (
                         <Badge variant="outline" className="bg-success/10 text-success border-success/20">
                           <CheckCircle className="h-3 w-3 ml-1" />
-                          מעודכן
+                          {t("status_up_to_date")}
                         </Badge>
                       )}
                     </td>
-                    <td className="px-5 py-3.5">
+                    <td className="px-5 py-3.5 text-center">
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8">
-                            <ChevronLeft className="h-4 w-4" />
-                          </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <ChevronLeft className="h-4 w-4" />
+                        </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="start">
-                          <DropdownMenuItem onClick={() => setSelectedLeadId(lead.id)}>
+                          <DropdownMenuItem
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedLead(lead);
+                            }}
+                          >
                             <Eye className="h-4 w-4 ml-2" />
-                            צפה
+                            {t("view_lead")}
                           </DropdownMenuItem>
-                          <DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setEditingLead(lead);
+                              setIsEditDialogOpen(true);
+                            }}
+                          >
                             <Edit className="h-4 w-4 ml-2" />
-                            ערוך
+                            {t("edit")}
                           </DropdownMenuItem>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
@@ -633,7 +831,7 @@ export default function Leads() {
                             onClick={(e) => handleDeleteClick(lead.id, e)}
                           >
                             <Trash2 className="h-4 w-4 ml-2" />
-                            מחק
+                            {t("delete")}
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
@@ -657,12 +855,28 @@ export default function Leads() {
               : t("create_lead_to_start")}
           </p>
           {!search && activeFilter === 'all' && (
-            <Button className="mt-4" onClick={() => { }}>
+            <Button className="mt-4" onClick={() => setAddLeadOpen(true)}>
               <Plus className="h-4 w-4 ml-2" />
               {t("add_new_lead")}
             </Button>
           )}
         </div>
+      )}
+
+      {editingLead && (
+        <EditLeadDialog
+          lead={editingLead}
+          open={isEditDialogOpen}
+          onOpenChange={(open) => {
+            if (!open) {
+              setIsEditDialogOpen(false);
+              setEditingLead(null);
+            } else {
+              setIsEditDialogOpen(true);
+            }
+          }}
+          onSuccess={handleLeadUpdated}
+        />
       )}
 
       {/* Delete Confirmation Dialog */}
